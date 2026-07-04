@@ -17,6 +17,7 @@ interface MarketDataState {
   updateData: (id: string, data: Partial<MarketData>) => void;
   setConnectionStatus: (exchange: string, status: 'Connected' | 'Disconnected' | 'Connecting' | 'Error' | 'Invalid Keys') => void;
   addPosition: (position: Position) => void;
+  updatePosition: (id: string, data: Partial<Position>) => void;
   closePosition: (id: string) => void;
   addDebugLog: (exchange: string, msg: string, type?: 'info' | 'success' | 'error' | 'warning') => void;
 }
@@ -50,6 +51,9 @@ export const useMarketDataStore = create<MarketDataState>((set, get) => ({
   })),
   addPosition: (position) => set((state) => ({
     positions: [position, ...state.positions]
+  })),
+  updatePosition: (id, data) => set((state) => ({
+    positions: state.positions.map(p => p.id === id ? { ...p, ...data } : p)
   })),
   closePosition: (id) => set((state) => {
     const pos = state.positions.find(p => p.id === id);
@@ -446,6 +450,45 @@ async function startBybitStream() {
 
 setInterval(() => {
   const store = useMarketDataStore.getState();
+  const now = Date.now();
+  
+  // Funding Settlement Logic
+  store.positions.forEach(pos => {
+    if (pos.status !== 'Open') return;
+    const data = store.marketData[`${pos.exchange}-${pos.symbol}`];
+    if (data && data.nextFundingTime) {
+      // Use a hidden property to track the last settled funding timestamp
+      const lastSettled = (pos as any)._lastSettledTime || 0;
+      
+      if (now >= data.nextFundingTime && lastSettled !== data.nextFundingTime) {
+         // Calculate funding payment
+         const fundingRateDec = data.fundingRate / 100;
+         const positionValue = pos.futureSize * data.futurePrice;
+         
+         const fundingPayment = positionValue * fundingRateDec * (pos.futureDirection === 'SELL' ? 1 : -1);
+         
+         const newEarned = pos.fundingEarned + fundingPayment;
+         
+         const logType = fundingPayment >= 0 ? 'success' : 'error';
+         const logMsg = fundingPayment >= 0 
+           ? `Funding Credited: +${fundingPayment.toFixed(4)} USDT (Rate: ${data.fundingRate.toFixed(4)}%)` 
+           : `Funding Debited: ${fundingPayment.toFixed(4)} USDT (Rate: ${data.fundingRate.toFixed(4)}%)`;
+           
+         const newLogs = [
+           { time: new Date().toLocaleTimeString(), msg: logMsg, type: logType as any },
+           { time: new Date().toLocaleTimeString(), msg: 'Funding Event Detected & Settled', type: 'info' as any },
+           ...(pos.logs || [])
+         ].slice(0, 50);
+         
+         store.updatePosition(pos.id, { 
+           fundingEarned: newEarned,
+           logs: newLogs,
+           _lastSettledTime: data.nextFundingTime
+         } as any);
+      }
+    }
+  });
+
   Object.keys(store.marketData).forEach(id => {
     calculateDerivedFields(id, store);
   });

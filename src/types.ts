@@ -45,6 +45,7 @@ export interface Position {
   tradeType: TradeType;
   spotDirection: Direction;
   futureDirection: Direction;
+  logs?: {time: string, msg: string, type: 'info' | 'success' | 'error' | 'warning'}[];
 }
 
 export interface TradeHistory {
